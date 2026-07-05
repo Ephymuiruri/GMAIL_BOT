@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from dotenv import load_dotenv
@@ -5,9 +6,13 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
+
+RETRYABLE_STATUS_CODES = {429, 503}
+MAX_RETRIES = 5
 
 mcp = FastMCP("GMAIL")
 
@@ -46,18 +51,29 @@ def get_gmail_service():
     return _service
 
 
-def get_or_create_label(service, label_name: str) -> str:
+async def call_with_backoff(request):
+    """Execute a Gmail API request, retrying on 429/503 with exponential backoff (1,2,4,8,16s)."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if e.resp.status not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES - 1:
+                raise
+            await asyncio.sleep(2 ** attempt)
+
+
+async def get_or_create_label(service, label_name: str) -> str:
     """Get a label's ID by name, creating it if it doesn't exist."""
-    existing = service.users().labels().list(userId="me").execute()
+    existing = await call_with_backoff(service.users().labels().list(userId="me"))
 
     for existing_label in existing.get("labels", []):
         if existing_label["name"].lower() == label_name.lower():
             return existing_label["id"]
 
-    created = service.users().labels().create(
+    created = await call_with_backoff(service.users().labels().create(
         userId="me",
         body={"name": label_name, "labelListVisibility": "labelShow"},
-    ).execute()
+    ))
     return created["id"]
 
 
@@ -82,23 +98,37 @@ async def process_email(
     add_label_ids = []
     remove_label_ids = []
 
-    if label:
-        add_label_ids.append(get_or_create_label(service, label))
-    if star:
-        add_label_ids.append("STARRED")
-    if archive:
-        remove_label_ids.append("INBOX")
+    try:
+        if label:
+            add_label_ids.append(await get_or_create_label(service, label))
+        if star:
+            add_label_ids.append("STARRED")
+        if archive:
+            remove_label_ids.append("INBOX")
 
-    if not add_label_ids and not remove_label_ids:
-        return {"status": "noop"}
+        if not add_label_ids and not remove_label_ids:
+            return {"status": "noop"}
 
-    service.users().messages().modify(
-        userId="me",
-        id=email_id,
-        body={"addLabelIds": add_label_ids, "removeLabelIds": remove_label_ids},
-    ).execute()
+        # Any triage action implies the email has been handled, so clear UNREAD too.
+        remove_label_ids.append("UNREAD")
 
-    return {"status": "ok"}
+        await call_with_backoff(service.users().messages().modify(
+            userId="me",
+            id=email_id,
+            body={"addLabelIds": add_label_ids, "removeLabelIds": remove_label_ids},
+        ))
+
+        return {"status": "ok"}
+
+    except HttpError as e:
+        # All retries exhausted — park it under Unsorted instead of losing the action.
+        unsorted_id = await get_or_create_label(service, "Unsorted")
+        await call_with_backoff(service.users().messages().modify(
+            userId="me",
+            id=email_id,
+            body={"addLabelIds": [unsorted_id], "removeLabelIds": ["UNREAD"]},
+        ))
+        return {"status": "error", "detail": str(e), "fallback": "Unsorted"}
 
 
 if __name__ == "__main__":
