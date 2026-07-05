@@ -1,0 +1,33 @@
+Copy this file to preferences.txt and rewrite it to describe you. This text
+is sent to the LLM as-is on every run, so write it like you're briefing a
+new assistant on what matters to you.
+
+## Always flag as OPPORTUNITY
+- Internships, jobs, or freelance offers relevant to my field
+- Competitions, grants, or funding applications
+- Collaboration or speaking requests
+- Cold outreach from people or companies I'd want to hear from
+
+## Flag as LEARN
+- News or tutorials in topics I follow (fill in your interests)
+- Newsletters or courses relevant to my goals
+
+## Flag as NETWORK
+- Emails from colleagues, mentors, or people I know
+- Recruiters from companies I respect
+
+## Flag as URGENT
+- Anything from school or work with a deadline
+- Anything from people I report to or collaborate closely with
+
+## Flag as EVENT
+- Conferences, meetups, or webinars I might want to attend
+
+## Archive silently
+- Promotional and sales emails
+- Automated receipts and order confirmations
+- Social media notifications
+
+## Bias rule
+State whether you'd rather over-flag (see more, risk noise) or under-flag
+(see less, risk missing something) when the LLM is unsure.
