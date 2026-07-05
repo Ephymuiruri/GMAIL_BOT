@@ -1,0 +1,14 @@
+[project]
+name = "gmail-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client==2.198.0",
+    "google-auth==2.55.1",
+    "google-auth-httplib2==0.4.0",
+    "google-auth-oauthlib==1.4.0",
+    "mcp[cli]>=1.28.1",
+    "python-dotenv==1.2.2",
+]
