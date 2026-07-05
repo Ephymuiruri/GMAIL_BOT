@@ -21,6 +21,14 @@ from googleapiclient.discovery import build
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+try:
+    import prefilter_rules as rules
+except ImportError:
+    # No personal config yet — fall back to the shipped example so the bot
+    # still runs. Copy prefilter_rules_example.py to prefilter_rules.py to
+    # customize.
+    import prefilter_rules_example as rules
+
 load_dotenv()
 
 SCOPES = [
@@ -36,13 +44,6 @@ GEMINI_MODEL = "gemini-3.5-flash"
 MAX_RESULTS = 30
 LOGS_DIR = "logs"
 BODY_SNIPPET_CHARS = 2000
-
-# Senders whose prefilter rules need to inspect body content, not just the
-# subject/snippet (e.g. distinguishing a GitHub mention from a CI notification).
-DEEP_INSPECT_SENDERS = [
-    "notifications@github.com",
-    "clientservices@cytonn.com",
-]
 
 
 def get_gmail_service():
@@ -78,14 +79,14 @@ def _extract_body_text(payload: dict) -> str:
 
 def _needs_deep_inspect(sender: str) -> bool:
     sender = sender.lower()
-    return any(needle in sender for needle in DEEP_INSPECT_SENDERS)
+    return any(needle in sender for needle in rules.DEEP_INSPECT_SENDERS)
 
 
 def fetch_unread_emails(service, max_results: int = MAX_RESULTS) -> list[dict]:
     """Fetch unread emails, keeping every field we might reasonably need later.
 
     Most senders only need metadata + snippet for triage. A short list of
-    senders (DEEP_INSPECT_SENDERS) have prefilter rules that key off body
+    senders (rules.DEEP_INSPECT_SENDERS) have prefilter rules that key off body
     content (e.g. "were you mentioned"), so those get a second full-format
     fetch to pull a truncated body.
     """
@@ -151,8 +152,14 @@ def write_decisions(decisions: list[dict], run_id: str) -> str:
 
 
 def build_system_prompt() -> str:
-    with open("preferences.txt", "r") as f:
-        preferences = f.read()
+    try:
+        with open("preferences.txt", "r") as f:
+            preferences = f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            "preferences.txt not found. Copy preferences.example.txt to "
+            "preferences.txt and edit it to describe yourself."
+        )
 
     return f"""You are a personal email triage assistant. For each email in the
 batch, decide what to do with it and call the `process_email` tool once per
@@ -172,48 +179,12 @@ User profile / preferences:
 Call `process_email` exactly once per email you are given, using its id.
 """
 
-# Senders that are archived outright, no LLM involvement.
-PRE_FILTER_ARCHIVE_LIST = [
-    # Social Loop Noise (Likes, Suggestions, Digests)
-    {"from": "unread-messages@mail.instagram.com"},
-    {"from": "informational@email.snapchat.com"},
-    {"from": "no-reply@todoist.com", "subject_contains": "task(s) for"},
-    {"from": "info@email.jumia.co.ke"},
-    {"from": "no-reply@twitch.tv"},
-    # Generic LinkedIn Updates (Matches that are NOT human-to-human DMs)
-    {"from": "newsletters-noreply@linkedin.com"},
-    {"from": "jobalerts-noreply@linkedin.com"},
-]
-
-# Senders that are fast-tracked to a label, no LLM involvement.
-PRE_FILTER_FAST_PASS = [
-    # Urgent Academic Senders
-    {"domain": "students.uonbi.ac.ke", "label": "urgent"},
-    {"domain": "uonbi.ac.ke", "label": "urgent"},
-    # Urgent Work & Team Senders
-    {"domain": "chumz.io", "label": "urgent"},
-    {"domain": "moneto.ventures", "label": "urgent"},
-    # High-Value Developer Pipelines
-    {"from": "info@turing.com", "label": "opportunity"},
-    {"domain": "mercor.com", "label": "opportunity"},
-    {"domain": "propel.com", "label": "opportunity"},
-]
-
-GITHUB_MENTION_KEYWORDS = [
-    "mentioned you",
-    "requested your review",
-    "assigned you",
-    "@ephymuiruri",
-]
-
-LINKEDIN_ARCHIVE_SUBJECT_KEYWORDS = ["add you", "congratulations", "skills", "news"]
-
-
-def _sender_matches(sender: str, rule: dict) -> bool:
-    sender = sender.lower()
+def _rule_matches(sender: str, subject: str, rule: dict) -> bool:
     if "from" in rule and rule["from"] not in sender:
         return False
     if "domain" in rule and rule["domain"] not in sender:
+        return False
+    if "subject_contains" in rule and rule["subject_contains"] not in subject:
         return False
     return True
 
@@ -221,26 +192,16 @@ def _sender_matches(sender: str, rule: dict) -> bool:
 def _triage_github(body: str) -> dict | str:
     """Route GitHub notifications: human mentions go to the LLM, everything
     else (CI/CD runs, digests, generic activity) is machine noise."""
-    if any(keyword in body.lower() for keyword in GITHUB_MENTION_KEYWORDS):
+    if any(keyword in body.lower() for keyword in rules.GITHUB_MENTION_KEYWORDS):
         return "ROUTE_TO_LLM"
     return {"label": "dev-automated", "star": False, "archive": False}
-
-
-def _triage_cytonn(subject: str) -> dict | str:
-    """Route Cytonn/financial mail: predictable logs are filed away, everything
-    else (advisory notes, one-offs) goes to the LLM."""
-    if any(keyword in subject for keyword in ["statement", "payment notification", "receipt"]):
-        return {"label": "finance-logs", "star": False, "archive": False}
-    if any(keyword in subject for keyword in ["wmt", "seminar", "training"]):
-        return {"label": "finance-logs", "star": False, "archive": True}
-    return "ROUTE_TO_LLM"
 
 
 def _triage_linkedin(subject: str) -> dict | str:
     """Route LinkedIn mail by subject: passive updates are archived silently,
     everything else (including human contact like messages/InMail/proposals)
     goes to the LLM to assess."""
-    if any(keyword in subject for keyword in LINKEDIN_ARCHIVE_SUBJECT_KEYWORDS):
+    if any(keyword in subject for keyword in rules.LINKEDIN_ARCHIVE_SUBJECT_KEYWORDS):
         return {"label": None, "star": False, "archive": True}
     return "ROUTE_TO_LLM"
 
@@ -250,6 +211,7 @@ def prefilter(emails: list[dict]) -> tuple[list[dict], list[dict]]:
     Split emails into (decisions, remaining) without involving the LLM where
     the outcome is already deterministic from sender/subject/body rules.
     `decisions` are ready to execute via MCP; `remaining` still need Gemini.
+    Rules come from prefilter_rules.py (see prefilter_rules_example.py).
     """
     decisions = []
     remaining = []
@@ -259,8 +221,7 @@ def prefilter(emails: list[dict]) -> tuple[list[dict], list[dict]]:
         subject = email["subject"].lower()
         body = email.get("body", "") or ""
 
-        archived = next((r for r in PRE_FILTER_ARCHIVE_LIST if _sender_matches(sender, r)
-                          and ("subject_contains" not in r or r["subject_contains"] in subject)), None)
+        archived = next((r for r in rules.PRE_FILTER_ARCHIVE_LIST if _rule_matches(sender, subject, r)), None)
         if archived:
             decisions.append({
                 "id": email["id"], "label": None, "star": False, "archive": True,
@@ -268,18 +229,17 @@ def prefilter(emails: list[dict]) -> tuple[list[dict], list[dict]]:
             })
             continue
 
-        fast_pass = next((r for r in PRE_FILTER_FAST_PASS if _sender_matches(sender, r)), None)
+        fast_pass = next((r for r in rules.PRE_FILTER_FAST_PASS if _rule_matches(sender, subject, r)), None)
         if fast_pass:
             decisions.append({
-                "id": email["id"], "label": fast_pass["label"], "star": False, "archive": False,
+                "id": email["id"], "label": fast_pass["label"], "star": False,
+                "archive": fast_pass.get("archive", False),
                 "source": "prefilter",
             })
             continue
 
         if "notifications@github.com" in sender:
             outcome = _triage_github(body)
-        elif "clientservices@cytonn.com" in sender:
-            outcome = _triage_cytonn(subject)
         elif "linkedin.com" in sender:
             outcome = _triage_linkedin(subject)
         else:
