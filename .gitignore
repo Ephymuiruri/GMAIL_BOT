@@ -89,3 +89,6 @@ Thumbs.db
 # Secrets and personal data
 Credentials/
 logs/
+
+#private files
+fetch_training_data.py
