@@ -47,7 +47,8 @@ Gmail requires OAuth so the bot can read your mail securely. Here's how to set i
 3. Then go to **APIs & Services → Credentials** → **+ Create Credentials → OAuth client ID**
 4. Choose **Application type: Desktop app** and create it
 5. Click the download icon next to your OAuth client to grab the JSON file
-6. Create a `Credentials/` folder in this project directory and save the JSON as `Credentials/credentials.json`
+6. Then go to **APIs & Services → Oauth consent screen** → **Audience → Test users section → add test user - Here add your email to give the app access**
+7. Create a `Credentials/` folder in this project directory and save the JSON as `Credentials/credentials.json`
 
 **On first run**, the bot will open your browser to log in and automatically create `Credentials/token.json` — you only do the OAuth flow once.
 
