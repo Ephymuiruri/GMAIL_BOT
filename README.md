@@ -26,31 +26,36 @@ for the architecture reasoning (batching, prompt caching, tool design) and
 [CORE_BUILD.md](CORE_BUILD.md) for a from-scratch walkthrough of the raw
 Gmail API mechanics.
 
-## Setup
+## Getting Started
 
-### 1. Prerequisites
+Before you dive in, make sure you have the following ready:
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (used to run the MCP server)
-- A Google account with Gmail
-- A [Gemini API key](https://aistudio.google.com/apikey)
+### Prerequisites
 
-### 2. Google Cloud OAuth credentials
+You'll need:
+- **A Google account with an email address** — Use any account you already have; the bot reads from that inbox
+- **A [Gemini API key](https://aistudio.google.com/apikey)** — Free tier available! Sign up at Google AI Studio with no credit card required
 
-Gmail requires OAuth for any app reading your mail.
+We'll verify you have Python and the other tools when you install dependencies in the next step.
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and
-   create a project.
-2. **APIs & Services → Library** → enable the **Gmail API**.
-3. **APIs & Services → Credentials** → **Create Credentials → OAuth client
-   ID** → Application type **Desktop app**.
-4. Download the JSON, save it as `Credentials/credentials.json`.
+### Step 1: Set Up Google Cloud OAuth
 
-The first run opens a browser to log in and creates `Credentials/token.json`
-automatically — you won't need to repeat this.
+Gmail requires OAuth so the bot can read your mail securely. Here's how to set it up:
 
-### 3. Install dependencies
+1. Head to [console.cloud.google.com](https://console.cloud.google.com) and create a new project (call it "Gmail Triage" or whatever you like)
+2. Go to **APIs & Services → Library** and search for **Gmail API** — enable it
+3. Then go to **APIs & Services → Credentials** → **+ Create Credentials → OAuth client ID**
+4. Choose **Application type: Desktop app** and create it
+5. Click the download icon next to your OAuth client to grab the JSON file
+6. Create a `Credentials/` folder in this project directory and save the JSON as `Credentials/credentials.json`
 
+**On first run**, the bot will open your browser to log in and automatically create `Credentials/token.json` — you only do the OAuth flow once.
+
+### Step 2: Install Dependencies
+
+Clone this repo and set up a Python virtual environment.
+
+**On macOS/Linux:**
 ```bash
 python3 -m venv venv
 source venv/bin/activate
@@ -61,41 +66,73 @@ uv sync
 cd ..
 ```
 
-### 4. Configure
+**On Windows (PowerShell):**
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
+cd gmail-mcp
+uv sync
+cd ..
+```
+
+If you get an execution policy error on Windows, run:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+Then try `.\venv\Scripts\Activate.ps1` again.
+
+### Step 3: Configure Your Settings
+
+Copy the example config files and customize them for your inbox:
+
+**On macOS/Linux:**
 ```bash
 cp .env.example .env
 cp preferences.example.txt preferences.txt
 cp prefilter_rules_example.py prefilter_rules.py
 ```
 
-- **`.env`** — add your `GEMINI_API_KEY`.
-- **`preferences.txt`** — describe yourself: what counts as an opportunity,
-  what's urgent, what you'd rather never see. This text is sent to the LLM
-  on every run, so write it like a briefing.
-- **`prefilter_rules.py`** — senders you already know how to handle
-  (employer, school, recruiters, noisy newsletters). Anything that matches a
-  rule here skips the LLM. Anything that doesn't falls through to Gemini.
+**On Windows (PowerShell):**
+```powershell
+Copy-Item .env.example -Destination .env
+Copy-Item preferences.example.txt -Destination preferences.txt
+Copy-Item prefilter_rules_example.py -Destination prefilter_rules.py
+```
 
-None of these three files are tracked in git — they're yours.
+Now edit each file:
 
-### 5. Run
+- **`.env`** — Paste your **Gemini API key** here (the free tier is plenty). Get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no credit card required.
+- **`preferences.txt`** — Write a brief about yourself: what counts as an opportunity, what's urgent, what you never want to see. This text is sent to Gemini on every run, so be specific and honest.
+- **`prefilter_rules.py`** — List senders you already know how to handle automatically (your boss, your school, recruiters, noisy newsletters). Anything matching a rule here skips Gemini entirely and goes straight to action. Anything that doesn't match falls through to Gemini.
 
+None of these files are tracked in git — they're yours alone.
+
+### Step 4: Run the Bot
+
+Make sure your virtual environment is activated, then kick it off:
+
+**On macOS/Linux:**
 ```bash
 python3 gmail_client.py
 ```
 
-Each run:
-1. Fetches your unread mail via Gmail API
-2. Prefilters it against deterministic rules (skips LLM, fully auditable)
-3. Sends the rest to Gemini along with your `preferences.txt`
-4. Executes the resulting actions via the MCP server
-5. Writes audit logs:
-   - `logs/emails_<run_id>.json` — raw email snapshot
-   - `logs/decisions_<run_id>.json` — actions taken and why
+**On Windows:**
+```powershell
+python gmail_client.py
+```
 
-**Observability:** See [LOGGING_GUIDE.md](LOGGING_GUIDE.md) to watch client and
-server logs in parallel (`tail -f triage.log` + `tail -f gmail-mcp/mcp_server.log`).
+Each run does this:
+1. **Fetches** your unread mail from Gmail
+2. **Prefilters** it against your deterministic rules (no LLM, fully auditable)
+3. **Sends** the rest to Gemini along with your `preferences.txt` briefing
+4. **Executes** the resulting actions (label, star, archive, etc.) through the MCP server
+5. **Logs everything** to `logs/`:
+   - `logs/emails_<timestamp>.json` — snapshot of what it saw
+   - `logs/decisions_<timestamp>.json` — what it decided to do and why
+
+**Want to watch it work?** See [LOGGING_GUIDE.md](LOGGING_GUIDE.md) to tail both client and server logs in parallel for real-time debugging.
 
 ## How classification works
 
